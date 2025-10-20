@@ -16,6 +16,7 @@
  * @return An integer representing the exit status of the program. Returns 0 on successful execution.
  */
 int main(int argc, char* argv[]) {
+  std::cout << "Starting Client Application...\n";
   client clientRequest;
   clientRequest.clientRequest(argc, argv);
   return 0;
