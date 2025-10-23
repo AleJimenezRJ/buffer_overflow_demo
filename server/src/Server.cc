@@ -16,34 +16,12 @@
 
 Container bookContainer;
 
-// Helper function with hidden buffer overflow vulnerability
-void processUserInput(const char* username, VSocket* client) {
-  // Use a struct to guarantee member order: buffer followed by flag
-  struct DemoCtx {
-    char userBuffer[32];
-    volatile uint8_t isPrivileged; // set by overflow when username > 32 bytes
-  } ctx{}; // zero-initialize
-
-  const char* secret = "DEMO_SECRET: pa55w0rd!";
-
-  // Unsafe copy, allows buffer overflow to overwrite isPrivileged
-  strcpy(ctx.userBuffer, username); // Vulnerable!
-
-  // Debug info to help the demo
-  std::cout << "[DEBUG] username length=" << strlen(username)
-        << ", flagAddrOffset=" << (sizeof(ctx.userBuffer))
-        << ", flagValue=" << static_cast<int>(ctx.isPrivileged) << "\n";
-
-  // Only leak secret if privilege is (incorrectly) granted by overflow
-  if (ctx.isPrivileged) {
-    std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(strlen(secret)) + "\r\nContent-Type: text/plain; charset=UTF-8\r\nConnection: close\r\n\r\n";
-    client->Write(httpResponse.c_str());
-    client->Write(secret);
-    std::cout << "[!] Secret leaked due to buffer overflow!\n";
-    // End the request here to make the leak obvious in the demo
-    client->Close();
-    throw std::runtime_error("Privileged leak sent");
-  }
+// Minimal helper that will crash on overflow via strcpy
+void processUserInput(const char* input) {
+  // Intentionally too-small stack buffer; overflowing it will corrupt the stack
+  char userBuffer[32];
+  // Vulnerable copy: if input length > 31, this will overflow and likely crash on return
+  strcpy(userBuffer, input);
 }
 
 /**
@@ -91,12 +69,8 @@ void task(VSocket *client) {
   }
 
   // Call the helper with the username (could be empty if not provided)
-  try {
-    processUserInput(username.c_str(), client);
-  } catch (const std::exception&) {
-    // Leak was sent and connection closed; stop handling this request
-    return;
-  }
+  // If the username is too long, this will overflow and the process will likely crash.
+  processUserInput(username.c_str());
 
 
   std::cout << "Method: " << method << ", Path: " << path << "\n";
